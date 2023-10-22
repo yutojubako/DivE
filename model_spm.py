@@ -5,18 +5,18 @@ import torch.nn.functional as F
 import torch.nn.init
 import torchvision
 
-from agg_block.agg_block import AggregationBlock
+from .agg_block.agg_block import AggregationBlock
 
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from einops import rearrange, reduce
 from transformers import BertModel
-from agg_block.attention import default
+from .agg_block.attention import default
 
 def get_cnn(arch, pretrained):
     if arch == 'resnext_wsl':
         model = torch.hub.load('facebookresearch/WSL-Images', 'resnext101_32x8d_wsl')
     else:
-        model = torchvision.models.__dict__[arch](pretrained=pretrained) 
+        model = torchvision.models.__dict__[arch](pretrained=pretrained)
     return model
 
 # Problematic: could induce NaN loss
@@ -98,7 +98,7 @@ class MultiHeadSelfAttention(nn.Module):
             mask = mask.repeat(self.n_head, 1, 1).permute(1,2,0)
             attn.masked_fill_(mask, -np.inf)
         attn = self.softmax(attn)
-        
+
         output = torch.bmm(attn.transpose(1,2), x)
         if output.shape[1] == 1:
             output = output.squeeze(1)
@@ -130,16 +130,16 @@ class PIENet(nn.Module):
             global_feat = global_feat.unsqueeze(1).repeat(1, self.num_embeds, 1)
         out = self.layer_norm(global_feat + residual)
         return out, attn, residual
-        
-        
+
+
 class SetPredictionModule(nn.Module):
     def __init__(
-        self, 
-        num_embeds, 
-        d_in, 
-        d_out, 
-        axis, 
-        pos_enc, 
+        self,
+        num_embeds,
+        d_in,
+        d_out,
+        axis,
+        pos_enc,
         query_dim,
         args
     ):
@@ -151,7 +151,7 @@ class SetPredictionModule(nn.Module):
         self.res_act_global_dropout = nn.Dropout(args.res_act_global_dropout)
         self.fc = nn.Linear(d_out, 1024) if args.spm_residual_fc else nn.Identity()
         self.res_only_norm = args.res_only_norm
-        
+
         self.agg_block = AggregationBlock(
             depth = args.spm_depth,
             input_channels = d_in,
@@ -175,14 +175,14 @@ class SetPredictionModule(nn.Module):
             query_type = 'slot' if args.query_slot else 'learned',
             first_order=args.first_order
         )
-        
+
     def forward(self, local_feat, global_feat=None, pad_mask=None, lengths=None):
         set_prediction = self.agg_block(local_feat, mask=pad_mask)
         set_prediction = self.res_act_local_dropout(set_prediction)
         global_feat = global_feat.unsqueeze(1).repeat(1, self.num_embeds, 1)
         out = self.residual_norm(self.res_act_global_dropout(global_feat)) + set_prediction
         out = self.fc(out)
-        
+
         return out, None, set_prediction
 
 
@@ -200,13 +200,13 @@ class VSE(nn.Module):
             img_emb, img_attn, img_residual = self.img_enc(images, img_len)
             txt_emb, txt_attn, txt_residual = self.txt_enc(sentences, txt_len)
             return img_emb, txt_emb, img_attn, txt_attn, img_residual, txt_residual
-        
-        
+
+
 class SequenceBN(nn.Module):
     def __init__(self, dim, affine=True):
         super(SequenceBN, self).__init__()
         self.bn = nn.BatchNorm1d(dim, affine=affine)
-    
+
     def forward(self, x):
         shape = x.shape
         x = self.bn(rearrange(x, '... d -> (...) d')).reshape(shape)
@@ -220,7 +220,7 @@ class MLP(nn.Module):
         self.bn = SequenceBN(hidden_dim)
         self.relu = nn.ReLU()
         self.fc2 = nn.Linear(hidden_dim, output_dim)
-    
+
     def forward(self, x):
         x = self.fc2(self.relu(self.bn(self.fc1(x))))
         return x
@@ -249,7 +249,7 @@ class EncoderImage(nn.Module):
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.maxpool = nn.AdaptiveMaxPool2d((1, 1))
-        
+
         self.fc = nn.Linear(local_feat_dim, opt.embed_size)
         if opt.gpo_1x1:
             self.mlp = MLP(opt.embed_size, opt.embed_size // 2, opt.embed_size)
@@ -257,27 +257,27 @@ class EncoderImage(nn.Module):
         else:
             self.mlp = None
             self.spm_fc = self.fc if opt.spm_1x1 else nn.Identity()
-        
+
         if 'slot' == opt.arch:
             self.spm = SetPredictionModule(
-                num_embeds=num_embeds, 
-                d_in=opt.spm_input_dim if opt.spm_1x1 else 2048, 
-                d_out=embed_size, 
-                axis=2, 
-                pos_enc=opt.spm_img_pos_enc_type, 
+                num_embeds=num_embeds,
+                d_in=opt.spm_input_dim if opt.spm_1x1 else 2048,
+                d_out=embed_size,
+                axis=2,
+                pos_enc=opt.spm_img_pos_enc_type,
                 query_dim=opt.spm_query_dim,
                 args=opt
             )
         elif 'pvse' == opt.arch:
             self.spm = PIENet(num_embeds, opt.spm_input_dim, embed_size, opt.spm_input_dim // 2)
-            
+
         self.residual = opt.spm_residual
         assert opt.img_res_first_fc or opt.img_res_last_fc
         assert opt.img_res_pool in ['avg', 'max']
-        
+
         self.img_res_pool = opt.img_res_pool
         self.inter_dim = opt.spm_input_dim if opt.img_res_first_fc else local_feat_dim
-        
+
         self.residual_first_fc = self.spm_fc if opt.img_res_first_fc else nn.Identity()
         self.residual_last_fc = nn.Linear(self.inter_dim, embed_size) if opt.img_res_last_fc else nn.Identity()
         self.residual_first_pool = variable_len_pooling if opt.img_res_first_pool else lambda x, y, z: x
@@ -286,7 +286,7 @@ class EncoderImage(nn.Module):
             self.residual_first_pool = lambda x, y, z: x
             self.residual_after_pool = lambda x, y, z: x
         self.residual_last_pool = variable_len_pooling if opt.img_res_last_pool else lambda x, y, z: x
-        
+
         assert opt.spm_img_pos_enc_type == 'none' if self.butd else True
 
         if opt.spm_xavier_init:
@@ -309,7 +309,7 @@ class EncoderImage(nn.Module):
         self.mlp.apply(fn)
         nn.init.xavier_uniform_(self.fc.weight)
         nn.init.constant_(self.fc.bias, 0.0)
-        
+
     def grid_feature_drop(self, x):
         # This function requires X with shape of B (...) D; N-dimensional tensor but could be squeezed to 3D
         x = rearrange(x, 'b h w d -> b (h w) d')
@@ -345,26 +345,26 @@ class EncoderImage(nn.Module):
             out_nxn = self.cnn(images)
             s = out_nxn.shape[-1]
             out_nxn = out_nxn.view(
-                -1, 
-                self.local_feat_dim, 
-                int((s/self.local_feat_dim)**0.5), 
+                -1,
+                self.local_feat_dim,
+                int((s/self.local_feat_dim)**0.5),
                 int((s/self.local_feat_dim)**0.5)
             )
             pad_mask = None
         else:
             out_nxn = rearrange(images, 'b (n 1) d -> b d n 1')
             pad_mask = get_pad_mask(images.shape[1], lengths, True)
-            
+
         out_nxn = rearrange(out_nxn, 'h i j k -> h j k i')
         if self.grid_drop_prob > 0:
             out_nxn, lengths = self.grid_feature_drop(out_nxn)
         out, attn, residual = self.spm(
-            local_feat=self.spm_fc(out_nxn), 
+            local_feat=self.spm_fc(out_nxn),
             global_feat=self.global_feat_holder(self.residual_connection(out_nxn, lengths)),
             pad_mask=pad_mask,
             lengths=lengths
         )
-        
+
         out = l2norm(out)
 
         return out, attn, residual
@@ -390,33 +390,33 @@ class EncoderText(nn.Module):
         self.gpo_rnn = opt.gpo_rnn
         self.rnn_hidden_size = embed_size if opt.gpo_rnn else embed_size // 2
         self.rnn = nn.GRU(word_dim, self.rnn_hidden_size, bidirectional=True, batch_first=True)
-        
+
         self.txt_attention_input = opt.txt_attention_input
         self.txt_pooling = opt.txt_pooling
         self.txt_pooling_fc = nn.Linear(embed_size, word_dim) if opt.txt_pooling_fc else nn.Identity()
         assert self.txt_attention_input in ['wemb', 'rnn']
         assert self.txt_pooling in ['rnn', 'max']
-        
+
         self.txt_attention_head = opt.arch
         self.txt_attention_input_dim = word_dim if self.txt_attention_input == 'wemb' \
             else embed_size
         self.residual = opt.spm_residual
-        
+
         if opt.arch == 'pvse':
             self.spm = PIENet(num_embeds, self.txt_attention_input_dim, embed_size, word_dim//2, opt.dropout)
         elif opt.arch == 'slot':
             self.spm = SetPredictionModule(
-                num_embeds=num_embeds, 
-                d_in=self.txt_attention_input_dim, 
-                d_out=embed_size, 
-                axis=1, 
-                pos_enc=opt.spm_txt_pos_enc_type, 
+                num_embeds=num_embeds,
+                d_in=self.txt_attention_input_dim,
+                d_out=embed_size,
+                axis=1,
+                pos_enc=opt.spm_txt_pos_enc_type,
                 query_dim=opt.spm_query_dim,
                 args=opt
             )
         else:
             raise NotImplementedError("Invalid attention head for text modality.")
-        
+
         self.dropout = nn.Dropout(opt.dropout if not opt.rnn_no_dropout else 0)
 
         self.init_weights(wemb_type, word2idx, word_dim)
@@ -451,7 +451,7 @@ class EncoderText(nn.Module):
                     missing_words.append(word)
             print('Words: {}/{} found in vocabulary; {} words missing'.format(
                 len(word2idx)-len(missing_words), len(word2idx), len(missing_words)))
-            
+
     def residual_connection(self, rnn_out, rnn_out_last, lengths):
         if self.txt_pooling == 'rnn':
             ret = rnn_out_last
@@ -469,7 +469,7 @@ class EncoderText(nn.Module):
         packed = pack_padded_sequence(wemb_out, lengths.cpu(), batch_first=True)
         if torch.cuda.device_count() > 1:
             self.rnn.flatten_parameters()
-        
+
         rnn_out, rnn_out_last = self.rnn(packed)
         # Reshape *final* output to (batch_size, hidden_size)
         rnn_out_last = rnn_out_last.permute(1, 0, 2).contiguous()
@@ -488,15 +488,15 @@ class EncoderText(nn.Module):
         elif self.txt_attention_head == 'slot':
             out, attn, residual = self.spm(
                 local_feat=rnn_out if self.txt_attention_input == 'rnn' else wemb_out,
-                global_feat=self.residual_connection(rnn_out, rnn_out_last, lengths) if self.residual else None, 
+                global_feat=self.residual_connection(rnn_out, rnn_out_last, lengths) if self.residual else None,
                 pad_mask=pad_mask,
                 lengths=lengths
             )
-        
+
         out = l2norm(out)
         return out, attn, residual
 
-    
+
 class EncoderTextBERT(nn.Module):
 
     def __init__(self, opt, shared_memory=None, shared_query=None):
@@ -507,7 +507,7 @@ class EncoderTextBERT(nn.Module):
 
         self.embed_size = embed_size
         self.use_attention = opt.txt_attention
-        
+
         self.bert = BertModel.from_pretrained('bert-base-uncased')
         self.linear = nn.Linear(768, self.embed_size)
         self.use_checkpoint = opt.use_checkpoint
@@ -516,38 +516,38 @@ class EncoderTextBERT(nn.Module):
         self.txt_attention_input = opt.txt_attention_input
         self.txt_pooling = opt.txt_pooling
         assert self.txt_pooling in ['cls', 'max']
-        
+
         self.txt_attention_head = opt.arch
         self.txt_attention_input_dim = embed_size
         self.residual = opt.spm_residual
         self.sep_bert_fc = opt.sep_bert_fc
         if self.sep_bert_fc:
             self.linear2 = nn.Linear(768, self.embed_size)
-        
+
         if opt.arch == 'pvse':
             self.spm = PIENet(
-                num_embeds, 
-                self.txt_attention_input_dim, 
-                embed_size, 
-                word_dim//2, 
+                num_embeds,
+                self.txt_attention_input_dim,
+                embed_size,
+                word_dim//2,
                 opt.dropout
             )
         elif opt.arch == 'slot':
             self.spm = SetPredictionModule(
-                num_embeds=num_embeds, 
-                d_in=self.txt_attention_input_dim, 
-                d_out=embed_size, 
-                axis=1, 
-                pos_enc=opt.spm_txt_pos_enc_type, 
+                num_embeds=num_embeds,
+                d_in=self.txt_attention_input_dim,
+                d_out=embed_size,
+                axis=1,
+                pos_enc=opt.spm_txt_pos_enc_type,
                 query_dim=opt.spm_query_dim,
                 args=opt
             )
         else:
             raise NotImplementedError("Invalid attention head for text modality.")
-        
+
         self.dropout = nn.Dropout(opt.dropout if not opt.rnn_no_dropout else 0)
 
-    
+
     def residual_connection(self, bert_out, bert_out_cls, lengths):
         if self.txt_pooling == 'cls':
             ret = bert_out_cls
@@ -561,11 +561,11 @@ class EncoderTextBERT(nn.Module):
         bert_emb = self.bert(x, bert_attention_mask)
         bert_emb = bert_emb[0]
         cap_len = lengths
-        
+
         local_cap_emb = self.linear(bert_emb)
         global_cap_emb = self.residual_connection(
-            local_cap_emb if not self.sep_bert_fc else self.linear2(bert_emb), 
-            local_cap_emb[:, 0] if not self.sep_bert_fc else self.linear2(bert_emb)[:, 0], 
+            local_cap_emb if not self.sep_bert_fc else self.linear2(bert_emb),
+            local_cap_emb[:, 0] if not self.sep_bert_fc else self.linear2(bert_emb)[:, 0],
             cap_len
         )
 
@@ -574,11 +574,11 @@ class EncoderTextBERT(nn.Module):
         elif self.txt_attention_head == 'slot':
             out, attn, residual = self.spm(
                 local_feat=local_cap_emb,
-                global_feat=global_cap_emb, 
+                global_feat=global_cap_emb,
                 pad_mask=pie_attention_mask,
                 lengths=lengths
             )
-        
+
         out = l2norm(out)
-        
+
         return out, attn, residual

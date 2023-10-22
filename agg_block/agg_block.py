@@ -90,7 +90,6 @@ class AggregationBlock(nn.Module):
                 ),
                 context_dim = input_dim)
 
-        print("latent_dim: ", latent_dim)
         get_cross_ff = lambda: self.prenorm(latent_dim, ff(latent_dim, dropout = ff_dropout, activation = activation, mult=ff_mult, more_dropout = more_dropout, xavier_init = xavier_init))
         get_cross_postnorm = lambda: self.postnorm(latent_dim)
 

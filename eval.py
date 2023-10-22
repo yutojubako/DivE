@@ -5,12 +5,12 @@ import pickle
 import numpy as np
 import torch
 from tqdm import tqdm
-from vocab import Vocabulary
-from model_pie import PVSE
-from model_spm import VSE
-from data import get_test_loader, get_loaders
-from option import parser, verify_input_args
-from similarity import SetwiseSimilarity
+from .vocab import Vocabulary
+from .model_pie import PVSE
+from .model_spm import VSE
+from .data import get_test_loader, get_loaders
+from .option import parser, verify_input_args
+from .similarity import SetwiseSimilarity
 
 def encode_data(model, data_loader, butd, use_gpu=False):
     """Encode all images and sentences loadable by data_loader"""
@@ -44,8 +44,8 @@ def encode_data(model, data_loader, butd, use_gpu=False):
             txt_embs = torch.zeros(txt_emb_sz, dtype=txt_emb.dtype, requires_grad=False).cuda()
 
         # preserve the embeddings by copying from gpu and converting to numpy
-        img_embs[ids] = img_emb 
-        txt_embs[ids] = txt_emb 
+        img_embs[ids] = img_emb
+        txt_embs[ids] = txt_emb
 
     return img_embs, txt_embs
 
@@ -59,7 +59,7 @@ def i2t(images, sentences, similarity_fn, nreps=1, npts=None, return_ranks=False
     # NOTE nreps : numbrt of captions per image, npts: number of images
     if npts is None:
         npts = int(images.shape[0] / nreps)
-        
+
     index_list = []
     ranks, top1 = np.zeros(npts), np.zeros(npts)
     for index in range(npts):
@@ -73,7 +73,7 @@ def i2t(images, sentences, similarity_fn, nreps=1, npts=None, return_ranks=False
             else:
                 _, K, D = im.shape
                 sim = similarity_fn(im.view(-1, D), sentences.view(-1, D)).flatten()
-        else: 
+        else:
             sim = np.tensordot(im, sentences, axes=[2, 2]).max(axis=(0,1,3)).flatten() \
                     if len(sentences.shape) == 3 else np.dot(im, sentences.T).flatten()
 
@@ -187,7 +187,7 @@ def evalrank(model, args, split='test'):
 
     nreps = 5
     print('Images: %d, Sentences: %d' % (img_embs.shape[0] / nreps, txt_embs.shape[0]))
-    
+
     img_set_size, txt_set_size = args.img_num_embeds, args.txt_num_embeds
     similarity = SetwiseSimilarity(
         img_set_size, txt_set_size, args.denominator, args.temperature)
@@ -199,22 +199,22 @@ def evalrank(model, args, split='test'):
         similarity_fn = similarity.max_similarity
     else:
         raise NotImplementedError
-    
+
     # 5fold cross-validation, only for MSCOCO
     mean_metrics = None
     if 'coco' in args.data_name and split == 'test':
         results = []
         for i in range(5):
             r, rt0 = i2t(
-                img_embs[i*5000:(i + 1)*5000], txt_embs[i*5000:(i + 1)*5000], 
+                img_embs[i*5000:(i + 1)*5000], txt_embs[i*5000:(i + 1)*5000],
                 similarity_fn,
                 nreps=nreps, return_ranks=True, use_gpu=args.eval_on_gpu)
-            
+
             ri, rti0 = t2i(
-                img_embs[i*5000:(i + 1)*5000], txt_embs[i*5000:(i + 1)*5000], 
+                img_embs[i*5000:(i + 1)*5000], txt_embs[i*5000:(i + 1)*5000],
                 similarity_fn,
                 nreps=nreps, return_ranks=True, use_gpu=args.eval_on_gpu)
-            
+
             r = (r[0], r[1], r[2], r[3], r[3] / n_samples, r[4], r[4] / n_samples)
             print("Image to text: %.2f, %.2f, %.2f, %.2f (%.2f), %.2f (%.2f)" % r)
             ri = (ri[0], ri[1], ri[2], ri[3], ri[3] / n_samples, ri[4], ri[4] / n_samples)
@@ -239,7 +239,7 @@ def evalrank(model, args, split='test'):
     # no cross-validation, full evaluation
     r, rt = i2t(img_embs, txt_embs, similarity_fn, nreps=nreps, return_ranks=True, use_gpu=args.eval_on_gpu)
     ri, rti = t2i(img_embs, txt_embs, similarity_fn, nreps=nreps, return_ranks=True, use_gpu=args.eval_on_gpu)
-        
+
     ar = (r[0] + r[1] + r[2]) / 3
     ari = (ri[0] + ri[1] + ri[2]) / 3
     rsum = r[0] + r[1] + r[2] + ri[0] + ri[1] + ri[2]
@@ -270,18 +270,18 @@ if __name__ == '__main__':
         args.ckpt = os.path.join('./logs', args.remark, 'ckpt.pth.tar')
         print(args.ckpt)
     assert os.path.isfile(args.ckpt)
-    
+
     if args.arch == 'pvse':
         model = PVSE(vocab.word2idx, args)
     elif args.arch == 'slot':
         model = VSE(vocab.word2idx, args)
-        
+
     if torch.cuda.is_available():
         model = torch.nn.DataParallel(model).cuda() if args.multi_gpu else model.cuda()
         torch.backends.cudnn.benchmark = True
-        
+
     state_dict = torch.load(args.ckpt)['model']
-    
+
     model.load_state_dict(state_dict)
     with torch.no_grad():
         # evaluate

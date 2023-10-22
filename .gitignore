@@ -6,3 +6,5 @@ vocab/*.json
 .vector_cache/
 logs/
 wandb/
+
+*.pyc
